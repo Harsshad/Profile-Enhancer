@@ -4,6 +4,10 @@ from core import fetch_github_data, fetch_leetcode_data, fetch_hackerrank_data, 
 
 app = FastAPI()
 
+@app.get("/")
+def read_root():
+    return {"message": "Profile Enhancer is running!"}
+
 class Usernames(BaseModel):
     github: str
     leetcode: str
