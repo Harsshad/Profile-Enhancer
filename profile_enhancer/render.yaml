@@ -3,7 +3,7 @@ services:
     name: profile-enhancer-app
     env: python
     buildCommand: pip install -r app/requirements.txt
-    startCommand: uvicorn profile_enhancer.app.score:app --host=0.0.0.0 --port=10000
+    startCommand: uvicorn app.score:app --host=0.0.0.0 --port=10000
 
     envVars:
       - key: PORT
