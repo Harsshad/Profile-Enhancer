@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from app.core import fetch_github_data, fetch_leetcode_data, fetch_hackerrank_data, smart_score, assign_label_custom
+from core import fetch_github_data, fetch_leetcode_data, fetch_hackerrank_data, smart_score, assign_label_custom
 
 app = FastAPI()
 
