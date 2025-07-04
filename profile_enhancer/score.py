@@ -1,33 +1,46 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from core import fetch_github_data, fetch_leetcode_data, fetch_hackerrank_data, smart_score, assign_label_custom
+from core import (
+    fetch_github_data, fetch_leetcode_data, fetch_hackerrank_data,
+    smart_score, assign_label_custom, get_gemini_review
+)
 
 app = FastAPI()
 
-@app.get("/")
-def read_root():
-    return {"message": "Profile Enhancer is running!"}
-
+# Pydantic model to define the expected request body structure
 class Usernames(BaseModel):
     github: str
     leetcode: str
     hackerrank: str
 
-def gather_all(usernames: tuple[str, str, str]):
-    github_username, leetcode_username, hackerrank_username = usernames
+@app.get("/")
+async def read_root():
+    """
+    Root endpoint for the API. Returns a simple message to confirm the service is running.
+    """
+    return {"message": "Profile Enhancer API is running!"}
 
-    github_data = fetch_github_data(github_username)
+async def gather_all_profile_data(github_username: str, leetcode_username: str, hackerrank_username: str):
+    """
+    Asynchronously gathers data from GitHub, LeetCode, and HackerRank.
+    Raises HTTPException if any data fetching fails.
+    """
+    # Fetch GitHub data
+    github_data = await fetch_github_data(github_username)
     if github_data is None:
-        raise ValueError(f"GitHub username '{github_username}' not found or failed.")
+        raise HTTPException(status_code=404, detail=f"GitHub username '{github_username}' not found or failed to fetch data.")
 
-    leetcode_data = fetch_leetcode_data(leetcode_username)
+    # Fetch LeetCode data
+    leetcode_data = await fetch_leetcode_data(leetcode_username)
     if leetcode_data is None:
-        raise ValueError(f"LeetCode username '{leetcode_username}' not found or failed.")
+        raise HTTPException(status_code=404, detail=f"LeetCode username '{leetcode_username}' not found or failed to fetch data.")
 
-    hackerrank_data = fetch_hackerrank_data(hackerrank_username)
+    # Fetch HackerRank data
+    hackerrank_data = await fetch_hackerrank_data(hackerrank_username)
     if hackerrank_data is None:
-        raise ValueError(f"HackerRank username '{hackerrank_username}' not found or failed.")
+        raise HTTPException(status_code=404, detail=f"HackerRank username '{hackerrank_username}' not found or failed to fetch data.")
 
+    # Combine all fetched data into a single dictionary
     return {
         **github_data,
         **leetcode_data,
@@ -35,32 +48,93 @@ def gather_all(usernames: tuple[str, str, str]):
     }
 
 @app.post("/score")
-async def score(data: Usernames):
+async def score_profile(data: Usernames):
+    """
+    Main endpoint to calculate a user's profile score and generate an AI review.
+    Expects GitHub, LeetCode, and HackerRank usernames in the request body.
+    """
     try:
-        results = gather_all((data.github, data.leetcode, data.hackerrank))
+        # Gather all profile data
+        features = await gather_all_profile_data(data.github, data.leetcode, data.hackerrank)
 
-        score = smart_score(
-            results["github_repos"],
-            results["github_stars"],
-            results["github_followers"],
-            results["github_forks"],
-            results["contributions_1yr"],
-            results["top_languages"],
-            results["leetcode_easy"],
-            results["leetcode_medium"],
-            results["leetcode_hard"],
-            results["hackerrank_badges"],
-            results["hackerrank_skills"]
+        # Calculate the smart score
+        computed_score = smart_score(
+            features["github_repos"],
+            features["github_stars"],
+            features["github_followers"],
+            features["github_forks"],
+            features["contributions_1yr"],
+            features["top_languages"],
+            features["leetcode_easy"],
+            features["leetcode_medium"],
+            features["leetcode_hard"],
+            features["hackerrank_badges"],
+            features["hackerrank_skills"]
         )
 
-        label = assign_label_custom(score)
+        # Assign a category label
+        category_label = assign_label_custom(computed_score)
 
+        # Prepare summary for Gemini API
+        result_summary = f"""
+        GitHub:
+          Public repos:      {features.get('github_repos', 'N/A')}
+          Stars:             {features.get('github_stars', 'N/A')}
+          Followers:         {features.get('github_followers', 'N/A')}
+          Forks:             {features.get('github_forks', 'N/A')}
+          Contributions (yr):{features.get('contributions_1yr', 'N/A')}
+          Languages:         {features.get('top_languages', 'N/A')}
+
+        LeetCode:
+          Easy solved:   {features.get('leetcode_easy', 'N/A')}
+          Medium solved: {features.get('leetcode_medium', 'N/A')}
+          Hard solved:   {features.get('leetcode_hard', 'N/A')}
+
+        HackerRank:
+          Badges:    {features.get('hackerrank_badges', 'N/A')}
+          Skills:    {features.get('hackerrank_skills', 'N/A')}
+
+        Overall Score:  {computed_score}
+        Category:        {category_label}
+        """
+
+        gemini_prompt = f"""
+        You are an expert coding judge and recruiter.
+        Given this summary of a user's developer profiles:
+
+        {result_summary}
+
+        For each section (GitHub, LeetCode, HackerRank):
+
+        1. Give a short strengths analysis, mentioning numbers or achievements you see.
+        2. Score each section individually out of 10 with brief reasoning.
+        3. Suggest the top improvement for each platform.
+
+        Then, calculate a single overall score for the user out of 100.
+        - Explain your weighting or reasoning (e.g., why you weighted some sections higher or lower).
+        - Show the formula if possible (e.g., sum or weighted average based on activity).
+        - Clearly state the "**Overall Score: XX/100**" at the end.
+
+        Finish with a holistic summary and any general tips for the candidate.
+
+        Format your answer clearly with headings for each section, and a final heading for "**Overall Score**".
+        """
+
+        # Get AI review from Gemini
+        ai_review = await get_gemini_review(gemini_prompt)
+
+        # Return the comprehensive result
         return {
-            "score": score,
-            "label": label,
-            "details": results
+            "score": computed_score,
+            "label": category_label,
+            "details": features,
+            "ai_review": ai_review
         }
-    except ValueError as e:
-        return {"error": str(e)}
+    except HTTPException as http_exc:
+        # Re-raise HTTPExceptions for FastAPI to handle
+        raise http_exc
     except Exception as e:
-        return {"error": f"Internal error: {str(e)}"}
+        # Catch any other unexpected errors and return a generic internal server error
+        print(f"Internal server error: {e}") # Log the error for debugging
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
