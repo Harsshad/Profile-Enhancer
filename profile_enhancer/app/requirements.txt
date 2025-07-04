@@ -6,3 +6,4 @@ numpy
 pandas
 cachetools
 google-generativeai
+python-dotenv

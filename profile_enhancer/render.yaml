@@ -4,7 +4,6 @@ services:
     env: python
     buildCommand: pip install -r app/requirements.txt
     startCommand: uvicorn app.score:app --host=0.0.0.0 --port=10000
-
     envVars:
       - key: PORT
         value: 10000
