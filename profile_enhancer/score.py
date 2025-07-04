@@ -12,7 +12,7 @@ app = FastAPI()
 # This allows your Flutter web app (and other specified origins) to make requests
 # to your FastAPI backend.
 origins = [
-    "https://codefusion-f6d69.web.app/",
+    "https://codefusion-f6d69.web.app",
     "http://localhost",
     "http://localhost:8080", # Common Flutter web development port
     "http://localhost:54067", # The specific origin from your error message
