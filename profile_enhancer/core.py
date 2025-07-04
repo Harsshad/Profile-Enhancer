@@ -5,6 +5,8 @@ import pandas as pd
 import google.generativeai as genai
 import time
 import os
+import asyncio # New import for asynchronous operations
+from fastapi.concurrency import run_in_threadpool # Recommended for FastAPI for synchronous I/O
 
 from dotenv import load_dotenv
 
@@ -12,17 +14,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Retrieve API keys from environment variables
-# In a production environment like Render, these should be set directly in the platform's environment settings.
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Configure Gemini API
-# It's crucial that GEMINI_API_KEY is set in Render's environment variables.
-# If not set, genai.configure might fail or subsequent API calls will.
 try:
     genai.configure(api_key=GEMINI_API_KEY)
 except Exception as e:
-    print(f"Error configuring Gemini API: {e}. Ensure GEMINI_API_KEY is set.")
+    print(f"Error configuring Gemini API: {e}. Ensure GEMINI_API_KEY is set in Render environment.")
     # In a production FastAPI app, you might want to log this and handle it gracefully
     # rather than crashing the server on startup.
 
@@ -108,60 +107,62 @@ def assign_label_custom(score):
     else:
         return "Excellent"
 
-# ======== DATA FETCH FUNCTIONS ========
-def fetch_github_data(username):
+# ======== DATA FETCH FUNCTIONS (NOW ASYNCHRONOUSLY WRAPPED) ========
+async def fetch_github_data(username):
     """
     Fetches GitHub user data including public repos, stars, followers, forks,
-    1-year contributions, and top languages.
+    1-year contributions, and top languages. Runs synchronous requests in a thread pool.
     """
     try:
-        user_url = f'https://api.github.com/users/{username}'
-        repos_url = f'https://api.github.com/users/{username}/repos?per_page=100'
+        # Run the synchronous requests.get and BeautifulSoup parsing in a separate thread
+        # to avoid blocking the FastAPI event loop.
+        def _sync_fetch():
+            user_url = f'https://api.github.com/users/{username}'
+            repos_url = f'https://api.github.com/users/{username}/repos?per_page=100'
 
-        # Fetch user data
-        user_resp = requests.get(user_url, headers=GITHUB_HEADERS)
-        if user_resp.status_code == 404:
-            print(f"GitHub fetch error: Username '{username}' not found.")
-            return None
-        user_resp.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
-        user_data = user_resp.json()
+            user_resp = requests.get(user_url, headers=GITHUB_HEADERS)
+            if user_resp.status_code == 404:
+                print(f"GitHub fetch error: Username '{username}' not found.")
+                return None
+            user_resp.raise_for_status()
+            user_data = user_resp.json()
 
-        repo_count = user_data.get('public_repos', 0)
-        followers = user_data.get('followers', 0)
+            repo_count = user_data.get('public_repos', 0)
+            followers = user_data.get('followers', 0)
 
-        # Fetch repository data for stars, forks, and languages
-        repos_resp = requests.get(repos_url, headers=GITHUB_HEADERS)
-        repos_resp.raise_for_status()
-        repos_data = repos_resp.json()
+            repos_resp = requests.get(repos_url, headers=GITHUB_HEADERS)
+            repos_resp.raise_for_status()
+            repos_data = repos_resp.json()
 
-        stars = sum(repo.get('stargazers_count', 0) for repo in repos_data)
-        forks = sum(repo.get('forks_count', 0) for repo in repos_data)
-        top_languages = list({repo.get("language") for repo in repos_data if repo.get("language")})
+            stars = sum(repo.get('stargazers_count', 0) for repo in repos_data)
+            forks = sum(repo.get('forks_count', 0) for repo in repos_data)
+            top_languages = list({repo.get("language") for repo in repos_data if repo.get("language")})
 
-        # Scrape GitHub profile page for 1-year contributions (less reliable, but often needed)
-        contributions_1yr = 0
-        try:
-            html = requests.get(f"https://github.com/{username}").text
-            soup = BeautifulSoup(html, "html.parser")
-            # The class name for contributions might change, needs to be monitored
-            contribs_tag = soup.find('h2', {"class": "f4 text-normal mb-2"})
-            if contribs_tag:
-                import re
-                m = re.search(r'([\d,]+) contributions', contribs_tag.text)
-                if m:
-                    contributions_1yr = int(m.group(1).replace(",", ""))
-        except Exception as e:
-            print(f"Warning: Could not scrape GitHub contributions for {username}: {e}")
-            contributions_1yr = 0 # Default to 0 if scraping fails
+            contributions_1yr = 0
+            try:
+                html = requests.get(f"https://github.com/{username}").text
+                soup = BeautifulSoup(html, "html.parser")
+                contribs_tag = soup.find('h2', {"class": "f4 text-normal mb-2"})
+                if contribs_tag:
+                    import re
+                    m = re.search(r'([\d,]+) contributions', contribs_tag.text)
+                    if m:
+                        contributions_1yr = int(m.group(1).replace(",", ""))
+            except Exception as e:
+                print(f"Warning: Could not scrape GitHub contributions for {username}: {e}")
+                contributions_1yr = 0
 
-        return {
-            "github_repos": repo_count,
-            "github_stars": stars,
-            "github_followers": followers,
-            "github_forks": forks,
-            "contributions_1yr": contributions_1yr,
-            "top_languages": ",".join(top_languages)
-        }
+            return {
+                "github_repos": repo_count,
+                "github_stars": stars,
+                "github_followers": followers,
+                "github_forks": forks,
+                "contributions_1yr": contributions_1yr,
+                "top_languages": ",".join(top_languages)
+            }
+
+        return await run_in_threadpool(_sync_fetch)
+
     except requests.exceptions.RequestException as e:
         print(f"GitHub API request error for {username}: {e}")
         return None
@@ -169,43 +170,47 @@ def fetch_github_data(username):
         print(f"An unexpected error occurred while fetching GitHub data for {username}: {e}")
         return None
 
-def fetch_leetcode_data(username):
+async def fetch_leetcode_data(username):
     """
     Fetches LeetCode problem-solving statistics (Easy, Medium, Hard problems solved)
-    using LeetCode's GraphQL API.
+    using LeetCode's GraphQL API. Runs synchronous requests in a thread pool.
     """
     try:
-        url = 'https://leetcode.com/graphql/'
-        headers = {'Content-Type': 'application/json'}
-        query = {
-            "operationName":"getUserProfile",
-            "variables":{"username":username},
-            "query":"""
-            query getUserProfile($username: String!) {
-              allQuestionsCount { difficulty count }
-              matchedUser(username: $username) {
-                problemsSolvedBeatsStats { difficulty percentage }
-                submitStats: submitStatsGlobal {
-                  acSubmissionNum { difficulty count }
-                }
-              }
-            }"""
-        }
-        resp = requests.post(url, json=query, headers=headers)
-        resp.raise_for_status()
-        result = resp.json()
+        def _sync_fetch():
+            url = 'https://leetcode.com/graphql/'
+            headers = {'Content-Type': 'application/json'}
+            query = {
+                "operationName":"getUserProfile",
+                "variables":{"username":username},
+                "query":"""
+                query getUserProfile($username: String!) {
+                  allQuestionsCount { difficulty count }
+                  matchedUser(username: $username) {
+                    problemsSolvedBeatsStats { difficulty percentage }
+                    submitStats: submitStatsGlobal {
+                      acSubmissionNum { difficulty count }
+                    }
+                  }
+                }"""
+            }
+            resp = requests.post(url, json=query, headers=headers)
+            resp.raise_for_status()
+            result = resp.json()
 
-        matched_user = result.get("data", {}).get("matchedUser")
-        if not matched_user:
-            print(f"LeetCode fetch error: Username '{username}' not found or no data.")
-            return None
+            matched_user = result.get("data", {}).get("matchedUser")
+            if not matched_user:
+                print(f"LeetCode fetch error: Username '{username}' not found or no data.")
+                return None
 
-        data = matched_user["submitStats"]["acSubmissionNum"]
-        easy = next((d["count"] for d in data if d["difficulty"]=="Easy"), 0)
-        medium = next((d["count"] for d in data if d["difficulty"]=="Medium"), 0)
-        hard = next((d["count"] for d in data if d["difficulty"]=="Hard"), 0)
+            data = matched_user["submitStats"]["acSubmissionNum"]
+            easy = next((d["count"] for d in data if d["difficulty"]=="Easy"), 0)
+            medium = next((d["count"] for d in data if d["difficulty"]=="Medium"), 0)
+            hard = next((d["count"] for d in data if d["difficulty"]=="Hard"), 0)
 
-        return {"leetcode_easy": easy, "leetcode_medium": medium, "leetcode_hard": hard}
+            return {"leetcode_easy": easy, "leetcode_medium": medium, "leetcode_hard": hard}
+
+        return await run_in_threadpool(_sync_fetch)
+
     except requests.exceptions.RequestException as e:
         print(f"LeetCode API request error for {username}: {e}")
         return None
@@ -213,28 +218,31 @@ def fetch_leetcode_data(username):
         print(f"An unexpected error occurred while fetching LeetCode data for {username}: {e}")
         return None
 
-def fetch_hackerrank_data(username):
+async def fetch_hackerrank_data(username):
     """
     Fetches HackerRank badge and skill counts by scraping the user's profile page.
+    Runs synchronous requests in a thread pool.
     """
     try:
-        url = f'https://www.hackerrank.com/{username}'
-        # Use a common User-Agent to avoid being blocked
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
-        if resp.status_code == 404:
-            print(f"HackerRank fetch error: Username '{username}' not found.")
-            return None
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        def _sync_fetch():
+            url = f'https://www.hackerrank.com/{username}'
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
+            if resp.status_code == 404:
+                print(f"HackerRank fetch error: Username '{username}' not found.")
+                return None
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Find badges and skills based on their HTML structure
-        badges = soup.find_all("div", class_="hacker-badge")
-        badge_count = len(badges)
+            badges = soup.find_all("div", class_="hacker-badge")
+            badge_count = len(badges)
 
-        skill_sect = soup.find_all("div", class_="profile-skill")
-        skill_count = len(skill_sect)
+            skill_sect = soup.find_all("div", class_="profile-skill")
+            skill_count = len(skill_sect)
 
-        return {"hackerrank_badges": badge_count, "hackerrank_skills": skill_count}
+            return {"hackerrank_badges": badge_count, "hackerrank_skills": skill_count}
+
+        return await run_in_threadpool(_sync_fetch)
+
     except requests.exceptions.RequestException as e:
         print(f"HackerRank API request error for {username}: {e}")
         return None
@@ -255,15 +263,12 @@ async def get_gemini_review(prompt, retries=3):
     if now - last_gemini_time < GEMINI_MIN_INTERVAL:
         wait_time = int(GEMINI_MIN_INTERVAL - (now - last_gemini_time))
         print(f"Gemini API Cooldown: Please wait {wait_time} seconds. Total calls: {gemini_call_count}")
-        # In a real app, you might want to queue the request or return a specific error
-        # For simplicity, we'll just return None or raise an exception.
         return f"Please wait {wait_time} seconds before making another Gemini API request. Too many requests."
 
     model = genai.GenerativeModel('gemini-1.5-flash')
 
     for attempt in range(retries):
         try:
-            # Using model.generate_content directly, which handles the API call
             response = await model.generate_content_async(prompt) # Use async version
             last_gemini_time = time.time()
             gemini_call_count += 1
@@ -273,10 +278,9 @@ async def get_gemini_review(prompt, retries=3):
             if "429" in error_message: # Rate limit error
                 wait = 2 ** attempt
                 print(f"[Retry {attempt+1}] Gemini rate limit hit. Waiting {wait}s...")
-                time.sleep(wait) # time.sleep is blocking, consider asyncio.sleep in a true async context
+                await asyncio.sleep(wait) # Use asyncio.sleep for non-blocking sleep
             else:
                 print(f"Gemini API error on attempt {attempt+1}: {error_message}")
-                # For other errors, we might not want to retry, or retry differently
                 return f"Gemini API error: {error_message}"
     print("Failed to get Gemini review after multiple retries.")
     return "Failed to generate AI review due to multiple retries."
