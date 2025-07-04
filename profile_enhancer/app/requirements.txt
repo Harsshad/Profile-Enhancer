@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+requests
+bs4
+numpy
+pandas
+cachetools
+google-generativeai
