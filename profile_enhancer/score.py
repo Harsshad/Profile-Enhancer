@@ -1,11 +1,32 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware # NEW: Import CORSMiddleware
 from core import (
     fetch_github_data, fetch_leetcode_data, fetch_hackerrank_data,
     smart_score, assign_label_custom, get_gemini_review
 )
 
 app = FastAPI()
+
+# NEW: Configure CORS middleware
+# This allows your Flutter web app (and other specified origins) to make requests
+# to your FastAPI backend.
+origins = [
+    "http://localhost",
+    "http://localhost:8080", # Common Flutter web development port
+    "http://localhost:52626", # The specific origin from your error message
+    # IMPORTANT: If you deploy your Flutter app to a live URL (e.g., Firebase Hosting, another Render service),
+    # you MUST add that production URL here as well. Example:
+    # "https://your-deployed-flutter-app.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,       # List of origins that are allowed to make requests
+    allow_credentials=True,      # Allow cookies to be included in cross-origin requests (if you use them)
+    allow_methods=["*"],         # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],         # Allow all headers in the request
+)
 
 # Pydantic model to define the expected request body structure
 class Usernames(BaseModel):
